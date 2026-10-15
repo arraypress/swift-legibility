@@ -114,6 +114,9 @@ struct LegibilityTests {
         let blank = Self.picture(width: 300, height: 100, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1))
         #expect(ReadBack.measure("Night Drive", in: blank) == 0, "nothing to read is a measured zero, not a failure")
         #expect(ReadBack.words(in: "Night-Drive (Remix)!") == ["night", "drive", "remix"])
+        // The fallback a busy Neural Engine forces: the same words, read on the CPU.
+        let onCPU = ReadBack.recognisedLines(in: image, onCPU: true)?.flatMap(ReadBack.words(in:))
+        #expect(onCPU == ["night", "drive"])
     }
 
     @Test func morphologyGrowsAndShrinks() {

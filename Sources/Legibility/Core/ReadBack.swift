@@ -11,6 +11,7 @@
 //
 
 import CoreGraphics
+import CoreML
 import Foundation
 import Vision
 
@@ -45,10 +46,11 @@ public enum ReadBack {
     /// Two things go wrong that are not the picture's fault, both measured on
     /// this machine. While another process holds the Neural Engine (an image
     /// model generating), a request can fail outright with an Espresso
-    /// runtime error — 4 of 10 runs did. And the first request in a fresh
-    /// process can come back empty while the recogniser loads. So a failed
-    /// request is asked again after a growing pause (up to four times, 2.6 s
-    /// in all), and an empty answer once more.
+    /// runtime error — 4 of 10 runs did, and waiting a few seconds did not
+    /// clear it. And the first request in a fresh process can come back empty
+    /// while the recogniser loads. So a failed request is asked again, then
+    /// on the CPU (which the Neural Engine's other tenant does not hold); an
+    /// empty answer is asked once more.
     public static func recognition(in image: CGImage, rect: CGRect? = nil) -> [String]? {
         var target = image
         if let rect {
@@ -59,9 +61,9 @@ public enum ReadBack {
             target = crop
         }
         var emptyAnswers = 0
-        for pause in [0.0, 0.3, 0.8, 1.5] {
+        for (pause, onCPU) in [(0.0, false), (0.3, false), (0.0, true), (0.5, true)] {
             if pause > 0 { Thread.sleep(forTimeInterval: pause) }
-            guard let lines = recognisedLines(in: target) else { continue }
+            guard let lines = recognisedLines(in: target, onCPU: onCPU) else { continue }
             if !lines.isEmpty { return lines.flatMap(words(in:)) }
             emptyAnswers += 1
             if emptyAnswers == 2 { return [] }
@@ -70,11 +72,19 @@ public enum ReadBack {
     }
 
     /// One recognition pass: the top candidate of every line found, or `nil`
-    /// when the request failed.
-    static func recognisedLines(in image: CGImage) -> [String]? {
+    /// when the request failed. `onCPU` keeps every stage off the Neural
+    /// Engine and the GPU.
+    static func recognisedLines(in image: CGImage, onCPU: Bool = false) -> [String]? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
+        if onCPU, let stages = try? request.supportedComputeStageDevices {
+            for (stage, devices) in stages {
+                if let cpu = devices.first(where: { if case .cpu = $0 { return true }; return false }) {
+                    request.setComputeDevice(cpu, for: stage)
+                }
+            }
+        }
         do { try VNImageRequestHandler(cgImage: image).perform([request]) } catch { return nil }
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
