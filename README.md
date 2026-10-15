@@ -9,7 +9,7 @@ macOS 14+ / iOS 17+.
 | `InkBox` | Where something actually drew: the bounds of pixels above 8% alpha, so an outline, shadow or plate that reaches past a layout box is counted. `overflow(_:inside:)` gives how far it reaches past a rectangle on each side. |
 | `LetterRing` | WCAG contrast between the median luminance of the letters' interior and a thin ring of pixels touching them (3 reference points out, at least 2 px). A stroke or plate in that ring counts; a bright patch of photograph pressing against thin letters counts against them. |
 | `Contrast` | WCAG 2 relative luminance and ratio, the 3:1 / 4.5:1 thresholds, and the least plate opacity that reaches a target. |
-| `ReadBack` | The share of the expected words that on-device text recognition (`.accurate`, no language correction) reads back from the finished picture. |
+| `ReadBack` | The share of the expected words that on-device text recognition (`.accurate`, no language correction) reads back from the finished picture. `measure` returns `nil` when recognition could not run at all (a busy Neural Engine fails requests outright; they are retried first), so a failure is never reported as unreadable text. |
 | `Pixels`, `Morphology` | RGBA bytes, alpha masks, luminance maps, and mask grow/shrink. |
 
 ```swift

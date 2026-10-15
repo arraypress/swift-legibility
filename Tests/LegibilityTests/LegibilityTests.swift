@@ -110,6 +110,9 @@ struct LegibilityTests {
         #expect(ReadBack.readFraction(of: "Night Drive", in: image) == 1)
         #expect(ReadBack.readFraction(of: "Morning Walk", in: image) == 0)
         #expect(ReadBack.readFraction(of: "", in: image) == 1, "nothing expected, nothing missing")
+        #expect(ReadBack.measure("Night Drive", in: image) == 1)
+        let blank = Self.picture(width: 300, height: 100, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        #expect(ReadBack.measure("Night Drive", in: blank) == 0, "nothing to read is a measured zero, not a failure")
         #expect(ReadBack.words(in: "Night-Drive (Remix)!") == ["night", "drive", "remix"])
     }
 
