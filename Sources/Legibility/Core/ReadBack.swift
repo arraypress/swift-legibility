@@ -36,12 +36,24 @@ public enum ReadBack {
             guard !pixels.isNull, pixels.width >= 4, pixels.height >= 4, let crop = image.cropping(to: pixels) else { return [] }
             target = crop
         }
+        // Asked twice when the first answer is nothing at all: the first
+        // request in a process can come back empty while Vision is still
+        // loading its recogniser (measured: a fresh binary read 0% of four
+        // plain, high-contrast lines, then 100% on the next run).
+        for _ in 0..<2 {
+            let lines = recognisedLines(in: target)
+            if !lines.isEmpty { return lines.flatMap(words(in:)) }
+        }
+        return []
+    }
+
+    /// One recognition pass: the top candidate of every line found.
+    static func recognisedLines(in image: CGImage) -> [String] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
-        try? VNImageRequestHandler(cgImage: target).perform([request])
-        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-        return lines.flatMap(words(in:))
+        try? VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
 
     /// `text` as comparable words: letters and digits only, lowercased.
