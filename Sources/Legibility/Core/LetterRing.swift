@@ -26,10 +26,17 @@ public enum LetterRing {
     public static func measure(composite: CGImage, letters: [Bool], referenceScale: Double) -> LetterContrast? {
         guard let parts = regions(letters: letters, width: composite.width, height: composite.height,
                                   referenceScale: referenceScale) else { return nil }
+        return measure(composite: composite, interior: parts.interior, ring: parts.ring)
+    }
+
+    /// The same contrast from regions already found (``regions(letters:width:height:referenceScale:)``):
+    /// one set of letters measured over several pictures — the same frame
+    /// under each strength of scrim, say — finds its regions once.
+    public static func measure(composite: CGImage, interior: [Int], ring: [Int]) -> LetterContrast? {
         let luminance = Pixels.luminances(of: composite)
         guard luminance.count == composite.width * composite.height,
-              let text = Contrast.percentile(parts.interior.map { luminance[$0] }, 0.5),
-              let surround = Contrast.percentile(parts.ring.map { luminance[$0] }, 0.5) else { return nil }
+              let text = Contrast.percentile(interior.map { luminance[$0] }, 0.5),
+              let surround = Contrast.percentile(ring.map { luminance[$0] }, 0.5) else { return nil }
         return LetterContrast(ratio: Contrast.ratio(text, surround), text: text, surround: surround)
     }
 

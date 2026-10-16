@@ -102,6 +102,10 @@ struct LegibilityTests {
         #expect(strong.ratio > 20)
         #expect(weak.ratio < 1.3)
         #expect(LetterRing.measure(composite: onBlack, letters: [Bool](repeating: false, count: 400 * 120), referenceScale: 1) == nil)
+        // Regions found once, measured over two pictures: the same answers.
+        let parts = try #require(LetterRing.regions(letters: mask, width: 400, height: 120, referenceScale: 1))
+        #expect(LetterRing.measure(composite: onBlack, interior: parts.interior, ring: parts.ring) == strong)
+        #expect(LetterRing.measure(composite: onCream, interior: parts.interior, ring: parts.ring) == weak)
     }
 
     @Test func recognitionReadsLargeWordsBack() {
