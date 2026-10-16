@@ -13,6 +13,7 @@ import CoreGraphics
 import CoreText
 import Foundation
 import Testing
+import Vision
 @testable import Legibility
 
 struct LegibilityTests {
@@ -117,6 +118,23 @@ struct LegibilityTests {
         // The fallback a busy Neural Engine forces: the same words, read on the CPU.
         let onCPU = ReadBack.recognisedLines(in: image, onCPU: true)?.flatMap(ReadBack.words(in:))
         #expect(onCPU == ["night", "drive"])
+    }
+
+    @Test func aRequestThatRunsIsReturnedWithItsHandler() async throws {
+        let image = Self.picture(width: 600, height: 160, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1)) {
+            Self.text("SIGNAL", size: 100, color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), in: $0, at: CGPoint(x: 30, y: 40))
+        }
+        // Off the cooperative pool, as every caller of Vision should run it.
+        let read = await VisionQueue.run { () -> [String]? in
+            guard let ran = VisionRetry.perform(on: image, { () -> VNRecognizeTextRequest in
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                VisionRetry.runOnCPU(request)
+                return request
+            }) else { return nil }
+            return (ran.request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        }
+        #expect(read == ["SIGNAL"])
     }
 
     @Test func morphologyGrowsAndShrinks() {

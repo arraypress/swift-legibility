@@ -11,6 +11,8 @@ macOS 14+ / iOS 17+.
 | `Contrast` | WCAG 2 relative luminance and ratio, the 3:1 / 4.5:1 thresholds, and the least plate opacity that reaches a target. |
 | `ReadBack` | The share of the expected words that on-device text recognition (`.accurate`, no language correction) reads back from the finished picture. `measure` returns `nil` when recognition could not run at all (a busy Neural Engine fails requests outright; they are retried, then run on the CPU), so a failure is never reported as unreadable text. |
 | `Pixels`, `Morphology` | RGBA bytes, alpha masks, luminance maps, and mask grow/shrink. |
+| `VisionRetry` | Any Vision request run so a busy Neural Engine is not mistaken for an answer: asked again, then on the CPU (`attempts`, `perform`, `runOnCPU`). `ReadBack` runs through it; so can a caller's own requests (subject masks, faces). |
+| `VisionQueue` | `run { … }` — blocking Vision work moved off Swift concurrency's cooperative pool onto a dispatch queue. Several Vision requests waiting at once on the pool was measured to deadlock every thread in it. |
 
 ```swift
 import Legibility

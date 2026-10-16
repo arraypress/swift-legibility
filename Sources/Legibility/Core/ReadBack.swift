@@ -11,7 +11,6 @@
 //
 
 import CoreGraphics
-import CoreML
 import Foundation
 import Vision
 
@@ -44,13 +43,10 @@ public enum ReadBack {
     /// The words read, or `nil` when recognition failed every time it was asked.
     ///
     /// Two things go wrong that are not the picture's fault, both measured on
-    /// this machine. While another process holds the Neural Engine (an image
-    /// model generating), a request can fail outright with an Espresso
-    /// runtime error — 4 of 10 runs did, and waiting a few seconds did not
-    /// clear it. And the first request in a fresh process can come back empty
-    /// while the recogniser loads. So a failed request is asked again, then
-    /// on the CPU (which the Neural Engine's other tenant does not hold); an
-    /// empty answer is asked once more.
+    /// this machine. A busy Neural Engine fails requests outright, so a
+    /// failed one goes through ``VisionRetry/attempts`` (again, then on the
+    /// CPU). And the first request in a fresh process can come back empty
+    /// while the recogniser loads, so an empty answer is asked once more.
     public static func recognition(in image: CGImage, rect: CGRect? = nil) -> [String]? {
         var target = image
         if let rect {
@@ -61,9 +57,9 @@ public enum ReadBack {
             target = crop
         }
         var emptyAnswers = 0
-        for (pause, onCPU) in [(0.0, false), (0.3, false), (0.0, true), (0.5, true)] {
-            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
-            guard let lines = recognisedLines(in: target, onCPU: onCPU) else { continue }
+        for attempt in VisionRetry.attempts {
+            if attempt.pause > 0 { Thread.sleep(forTimeInterval: attempt.pause) }
+            guard let lines = recognisedLines(in: target, onCPU: attempt.onCPU) else { continue }
             if !lines.isEmpty { return lines.flatMap(words(in:)) }
             emptyAnswers += 1
             if emptyAnswers == 2 { return [] }
@@ -78,14 +74,7 @@ public enum ReadBack {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
-        if onCPU, let stages = try? request.supportedComputeStageDevices {
-            for (stage, devices) in stages {
-                if let cpu = devices.first(where: { if case .cpu = $0 { return true }; return false }) {
-                    request.setComputeDevice(cpu, for: stage)
-                }
-            }
-        }
-        do { try VNImageRequestHandler(cgImage: image).perform([request]) } catch { return nil }
+        guard VisionRetry.perform(request, on: VNImageRequestHandler(cgImage: image), onCPU: onCPU) else { return nil }
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
 
