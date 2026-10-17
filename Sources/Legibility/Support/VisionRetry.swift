@@ -12,10 +12,20 @@
 //  request is asked again, then on the CPU, which the Neural Engine's other
 //  tenant does not hold.
 //
+//  0.3.2: a request can also never come back. With the Neural Engine's
+//  compiler service wedged, every text-recognition request blocked inside
+//  `performRequests` at 0 % CPU and a test run hung for 2 h 25 min. So a
+//  request that may use the Neural Engine runs on its own thread under a
+//  wall-clock limit (``neuralEngineTimeout``); past it the attempt counts as
+//  failed, and every later request in the process goes to the CPU (the
+//  stuck thread cannot be stopped, only abandoned). `LEGIBILITY_VISION_CPU=1`
+//  sends every request to the CPU from the start.
+//
 
 import CoreGraphics
 import CoreML
 import Foundation
+import os
 import Vision
 
 public enum VisionRetry {
@@ -24,12 +34,51 @@ public enum VisionRetry {
     /// the CPU only.
     public static let attempts: [(pause: Double, onCPU: Bool)] = [(0, false), (0.3, false), (0, true), (0.5, true)]
 
-    /// `request` performed once on `handler`; `false` when Vision refused.
+    /// How long a request that may use the Neural Engine is waited for
+    /// before it is abandoned and the CPU used instead, seconds.
+    public static let neuralEngineTimeout = 20.0
+
+    /// Whether every request goes to the CPU: `LEGIBILITY_VISION_CPU=1`, or a
+    /// request in this process timed out on the Neural Engine.
+    public static var cpuOnly: Bool {
+        stalled.withLock { $0 } || ProcessInfo.processInfo.environment["LEGIBILITY_VISION_CPU"] == "1"
+    }
+
+    private static let stalled = OSAllocatedUnfairLock(initialState: false)
+
+    /// `request` performed once on `handler`; `false` when Vision refused or
+    /// the Neural Engine did not answer within ``neuralEngineTimeout``.
     /// `onCPU` keeps every stage off the Neural Engine and the GPU.
     public static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, onCPU: Bool) -> Bool {
-        if onCPU { runOnCPU(request) }
-        do { try handler.perform([request]) } catch { return false }
-        return true
+        if onCPU || cpuOnly {
+            runOnCPU(request)
+            do { try handler.perform([request]) } catch { return false }
+            return true
+        }
+        return perform(request, on: handler, within: neuralEngineTimeout)
+    }
+
+    /// `request` on `handler` on a thread of its own, waited for at most
+    /// `seconds`; past that it is cancelled, abandoned, and the process
+    /// turns to the CPU.
+    static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, within seconds: Double) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        let outcome = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        // The request and handler are only touched by the worker until it
+        // signals, or never again here once abandoned.
+        nonisolated(unsafe) let request = request, handler = handler
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok: Bool
+            do { try handler.perform([request]); ok = true } catch { ok = false }
+            outcome.withLock { $0 = ok }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + seconds) == .success else {
+            stalled.withLock { $0 = true }
+            request.cancel()
+            return false
+        }
+        return outcome.withLock { $0 } ?? false
     }
 
     /// A request from `make` performed on `image` through ``attempts`` until
