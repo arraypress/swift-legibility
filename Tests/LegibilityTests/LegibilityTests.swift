@@ -16,6 +16,8 @@ import Testing
 import Vision
 @testable import Legibility
 
+// One at a time: a stall is process-wide, and one test stalls Vision on purpose.
+@Suite(.serialized)
 struct LegibilityTests {
 
     /// A transparent picture with `draw` run into it (CoreGraphics origin bottom-left).
@@ -141,19 +143,22 @@ struct LegibilityTests {
         #expect(read == ["SIGNAL"])
     }
 
-    /// A request that does not come back in time is abandoned, and the
-    /// process reads on the CPU from then on — a wedged Neural Engine once
-    /// hung a test run for 2 h 25 min. (No time at all: the request cannot
-    /// have finished. Every later request in this process then runs on the
-    /// CPU, which reads the same words.)
-    @Test func aRequestThatNeverAnswersIsAbandonedForTheCPU() {
+    /// A request that does not come back in time is abandoned, and Vision is
+    /// asked nothing more in the process: read-back is then "not measured"
+    /// (nil), never "unreadable" — a wedged Neural Engine service once hung
+    /// a test run for 2 h 25 min, on the CPU as well. (No time at all: the
+    /// request cannot have finished.)
+    @Test func aRequestThatNeverAnswersStopsVisionAndIsNotMeasured() {
         let image = Self.picture(width: 900, height: 200, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1)) {
             Self.text("LATE SET", size: 110, color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), in: $0, at: CGPoint(x: 30, y: 55))
         }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         #expect(VisionRetry.perform(request, on: VNImageRequestHandler(cgImage: image), within: 0) == false)
-        #expect(VisionRetry.cpuOnly)
+        #expect(VisionRetry.isStalled)
+        #expect(ReadBack.measure("Late Set", in: image) == nil, "not measured")
+        #expect(VisionRetry.perform(on: image) { VNRecognizeTextRequest() } == nil)
+        VisionRetry.resetStall()
         #expect(ReadBack.measure("Late Set", in: image) == 1)
     }
 

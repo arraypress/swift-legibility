@@ -12,14 +12,15 @@
 //  request is asked again, then on the CPU, which the Neural Engine's other
 //  tenant does not hold.
 //
-//  0.3.2: a request can also never come back. With the Neural Engine's
-//  compiler service wedged, every text-recognition request blocked inside
-//  `performRequests` at 0 % CPU and a test run hung for 2 h 25 min. So a
-//  request that may use the Neural Engine runs on its own thread under a
-//  wall-clock limit (``neuralEngineTimeout``); past it the attempt counts as
-//  failed, and every later request in the process goes to the CPU (the
-//  stuck thread cannot be stopped, only abandoned). `LEGIBILITY_VISION_CPU=1`
-//  sends every request to the CPU from the start.
+//  A request can also never come back. With the Neural Engine's compiler
+//  service wedged, every text-recognition request blocked inside
+//  `performRequests` at 0 % CPU and a test run hung for 2 h 25 min — on the
+//  CPU too: Vision itself waits on the stuck service, system-wide. So every
+//  request runs on its own thread under a wall-clock limit (``timeout``);
+//  past it the request is abandoned (its thread cannot be stopped), and the
+//  process sends Vision nothing more (``isStalled``): every later request
+//  fails at once, which callers report as not measured, never as an answer.
+//  `LEGIBILITY_VISION_CPU=1` keeps every request on the CPU from the start.
 //
 
 import CoreGraphics
@@ -34,33 +35,40 @@ public enum VisionRetry {
     /// the CPU only.
     public static let attempts: [(pause: Double, onCPU: Bool)] = [(0, false), (0.3, false), (0, true), (0.5, true)]
 
-    /// How long a request that may use the Neural Engine is waited for
-    /// before it is abandoned and the CPU used instead, seconds.
-    public static let neuralEngineTimeout = 20.0
+    /// How long one request is waited for before it is abandoned, seconds.
+    public static let timeout = 20.0
 
-    /// Whether every request goes to the CPU: `LEGIBILITY_VISION_CPU=1`, or a
-    /// request in this process timed out on the Neural Engine.
+    /// The 0.3.2 name of ``timeout``.
+    @available(*, deprecated, renamed: "timeout")
+    public static var neuralEngineTimeout: Double { timeout }
+
+    /// Whether every request runs on the CPU: `LEGIBILITY_VISION_CPU=1`.
     public static var cpuOnly: Bool {
-        stalled.withLock { $0 } || ProcessInfo.processInfo.environment["LEGIBILITY_VISION_CPU"] == "1"
+        ProcessInfo.processInfo.environment["LEGIBILITY_VISION_CPU"] == "1"
     }
+
+    /// Whether a request in this process never came back: Vision is stuck
+    /// (a wedged Neural Engine service holds it system-wide), and nothing
+    /// more is sent to it until the process ends.
+    public static var isStalled: Bool { stalled.withLock { $0 } }
 
     private static let stalled = OSAllocatedUnfairLock(initialState: false)
 
-    /// `request` performed once on `handler`; `false` when Vision refused or
-    /// the Neural Engine did not answer within ``neuralEngineTimeout``.
+    /// For tests: forget a stall.
+    static func resetStall() { stalled.withLock { $0 = false } }
+
+    /// `request` performed once on `handler`; `false` when Vision refused,
+    /// did not answer within ``timeout``, or has stalled in this process.
     /// `onCPU` keeps every stage off the Neural Engine and the GPU.
     public static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, onCPU: Bool) -> Bool {
-        if onCPU || cpuOnly {
-            runOnCPU(request)
-            do { try handler.perform([request]) } catch { return false }
-            return true
-        }
-        return perform(request, on: handler, within: neuralEngineTimeout)
+        guard !isStalled else { return false }
+        if onCPU || cpuOnly { runOnCPU(request) }
+        return perform(request, on: handler, within: timeout)
     }
 
     /// `request` on `handler` on a thread of its own, waited for at most
-    /// `seconds`; past that it is cancelled, abandoned, and the process
-    /// turns to the CPU.
+    /// `seconds`; past that it is cancelled and abandoned, and Vision is
+    /// sent nothing more in this process.
     static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, within seconds: Double) -> Bool {
         let done = DispatchSemaphore(value: 0)
         let outcome = OSAllocatedUnfairLock<Bool?>(initialState: nil)
@@ -87,6 +95,7 @@ public enum VisionRetry {
     public static func perform<Request: VNRequest>(on image: CGImage, _ make: () -> Request)
         -> (request: Request, handler: VNImageRequestHandler)? {
         for attempt in attempts {
+            guard !isStalled else { return nil }
             if attempt.pause > 0 { Thread.sleep(forTimeInterval: attempt.pause) }
             let request = make()
             let handler = VNImageRequestHandler(cgImage: image)

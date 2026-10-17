@@ -58,6 +58,8 @@ public enum ReadBack {
         }
         var emptyAnswers = 0
         for attempt in VisionRetry.attempts {
+            // Vision stuck in this process: not measured, and nothing more asked.
+            guard !VisionRetry.isStalled else { return nil }
             if attempt.pause > 0 { Thread.sleep(forTimeInterval: attempt.pause) }
             guard let lines = recognisedLines(in: target, onCPU: attempt.onCPU) else { continue }
             if !lines.isEmpty { return lines.flatMap(words(in:)) }
