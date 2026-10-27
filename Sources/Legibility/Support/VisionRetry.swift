@@ -20,6 +20,10 @@
 //  past it the request is abandoned (its thread cannot be stopped), and the
 //  process sends Vision nothing more (``isStalled``): every later request
 //  fails at once, which callers report as not measured, never as an answer.
+//  A slow answer is not a stuck one: the first request in a process loads
+//  Vision's models and took longer than 20 s on a cold start, so it gets
+//  ``warmUpTimeout``; and an abandoned request that does come back lifts the
+//  stall. Only a request that never answers keeps Vision stopped.
 //  `LEGIBILITY_VISION_CPU=1` keeps every request on the CPU from the start.
 //
 
@@ -38,24 +42,27 @@ public enum VisionRetry {
     /// How long one request is waited for before it is abandoned, seconds.
     public static let timeout = 20.0
 
-    /// The 0.3.2 name of ``timeout``.
-    @available(*, deprecated, renamed: "timeout")
-    public static var neuralEngineTimeout: Double { timeout }
+    /// How long the first request in a process is waited for, seconds: it
+    /// loads Vision's models, which took longer than ``timeout`` on a cold start.
+    public static let warmUpTimeout = 120.0
 
     /// Whether every request runs on the CPU: `LEGIBILITY_VISION_CPU=1`.
     public static var cpuOnly: Bool {
         ProcessInfo.processInfo.environment["LEGIBILITY_VISION_CPU"] == "1"
     }
 
-    /// Whether a request in this process never came back: Vision is stuck
-    /// (a wedged Neural Engine service holds it system-wide), and nothing
-    /// more is sent to it until the process ends.
-    public static var isStalled: Bool { stalled.withLock { $0 } }
+    /// Whether a request in this process has not come back: Vision may be
+    /// stuck (a wedged Neural Engine service holds it system-wide), and
+    /// nothing more is sent to it until that request answers.
+    public static var isStalled: Bool { health.withLock { $0.stalled } }
 
-    private static let stalled = OSAllocatedUnfairLock(initialState: false)
+    private static let health = OSAllocatedUnfairLock(initialState: VisionHealth())
+
+    /// For tests: a request abandoned, with none left running.
+    static func markStalled() { health.withLock { $0.abandoned() } }
 
     /// For tests: forget a stall.
-    static func resetStall() { stalled.withLock { $0 = false } }
+    static func resetStall() { health.withLock { $0.answered() } }
 
     /// `request` performed once on `handler`; `false` when Vision refused,
     /// did not answer within ``timeout``, or has stalled in this process.
@@ -63,12 +70,12 @@ public enum VisionRetry {
     public static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, onCPU: Bool) -> Bool {
         guard !isStalled else { return false }
         if onCPU || cpuOnly { runOnCPU(request) }
-        return perform(request, on: handler, within: timeout)
+        return perform(request, on: handler, within: health.withLock { $0.limit(timeout: timeout, warmUp: warmUpTimeout) })
     }
 
     /// `request` on `handler` on a thread of its own, waited for at most
     /// `seconds`; past that it is cancelled and abandoned, and Vision is
-    /// sent nothing more in this process.
+    /// sent nothing more until it answers.
     static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, within seconds: Double) -> Bool {
         let done = DispatchSemaphore(value: 0)
         let outcome = OSAllocatedUnfairLock<Bool?>(initialState: nil)
@@ -79,10 +86,11 @@ public enum VisionRetry {
             let ok: Bool
             do { try handler.perform([request]); ok = true } catch { ok = false }
             outcome.withLock { $0 = ok }
+            health.withLock { $0.answered() }
             done.signal()
         }
         guard done.wait(timeout: .now() + seconds) == .success else {
-            stalled.withLock { $0 = true }
+            health.withLock { $0.abandoned() }
             request.cancel()
             return false
         }

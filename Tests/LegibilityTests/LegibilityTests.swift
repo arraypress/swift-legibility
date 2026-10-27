@@ -143,23 +143,46 @@ struct LegibilityTests {
         #expect(read == ["SIGNAL"])
     }
 
-    /// A request that does not come back in time is abandoned, and Vision is
-    /// asked nothing more in the process: read-back is then "not measured"
+    /// A request that does not come back in time is abandoned and Vision is
+    /// asked nothing more until it answers: read-back is then "not measured"
     /// (nil), never "unreadable" — a wedged Neural Engine service once hung
-    /// a test run for 2 h 25 min, on the CPU as well. (No time at all: the
-    /// request cannot have finished.)
-    @Test func aRequestThatNeverAnswersStopsVisionAndIsNotMeasured() {
+    /// a test run for 2 h 25 min, on the CPU as well. A late answer lifts the
+    /// stall. (No time at all: the request cannot have finished; cancelled,
+    /// it answers soon after.)
+    @Test func aStalledVisionIsNotMeasuredUntilALateAnswerLiftsIt() throws {
         let image = Self.picture(width: 900, height: 200, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1)) {
             Self.text("LATE SET", size: 110, color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), in: $0, at: CGPoint(x: 30, y: 55))
         }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         #expect(VisionRetry.perform(request, on: VNImageRequestHandler(cgImage: image), within: 0) == false)
-        #expect(VisionRetry.isStalled)
+        let deadline = Date().addingTimeInterval(30)
+        while VisionRetry.isStalled, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        #expect(!VisionRetry.isStalled, "the abandoned request answered late, and lifted the stall")
+
+        VisionRetry.markStalled()
         #expect(ReadBack.measure("Late Set", in: image) == nil, "not measured")
         #expect(VisionRetry.perform(on: image) { VNRecognizeTextRequest() } == nil)
+        #expect(VisionRetry.perform(VNRecognizeTextRequest(), on: VNImageRequestHandler(cgImage: image), onCPU: true) == false,
+                "nothing is sent, on the CPU either")
         VisionRetry.resetStall()
         #expect(ReadBack.measure("Late Set", in: image) == 1)
+    }
+
+    /// The first request in a process loads Vision's models — longer than
+    /// 20 s on a cold start — so it is given the warm-up limit; once one has
+    /// answered, the ordinary one. An abandoned request stops Vision until
+    /// any answers.
+    @Test func theFirstRequestMayTakeLongerAndALateAnswerLiftsAStall() {
+        var health = VisionHealth()
+        #expect(health.limit(timeout: 20, warmUp: 120) == 120)
+        health.abandoned()
+        #expect(health.stalled)
+        #expect(health.limit(timeout: 20, warmUp: 120) == 120, "abandoning is not answering")
+        health.answered()
+        #expect(!health.stalled)
+        #expect(health.limit(timeout: 20, warmUp: 120) == 20)
+        #expect(VisionRetry.warmUpTimeout > VisionRetry.timeout)
     }
 
     @Test func morphologyGrowsAndShrinks() {
