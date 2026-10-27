@@ -169,6 +169,22 @@ struct LegibilityTests {
         #expect(ReadBack.measure("Late Set", in: image) == 1)
     }
 
+    /// One request at a time: concurrent text requests froze Vision together.
+    /// A request that cannot get the turn in time fails without stalling
+    /// Vision (nothing was sent), and the turn passes on once a request returns.
+    @Test func requestsTakeTurnsAndWaitingIsNotAStall() {
+        let image = Self.picture(width: 600, height: 160, fill: CGColor(red: 1, green: 1, blue: 1, alpha: 1)) {
+            Self.text("TURN", size: 100, color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), in: $0, at: CGPoint(x: 30, y: 30))
+        }
+        VisionRetry.turn.wait()
+        #expect(VisionRetry.perform(VNRecognizeTextRequest(), on: VNImageRequestHandler(cgImage: image), within: 0.3) == false, "no turn, no request")
+        #expect(!VisionRetry.isStalled, "waiting for the turn is not a stall")
+        VisionRetry.turn.signal()
+        for _ in 0..<2 {
+            #expect(VisionRetry.perform(VNRecognizeTextRequest(), on: VNImageRequestHandler(cgImage: image), within: 20), "each returns the turn")
+        }
+    }
+
     /// The first request in a process loads Vision's models — longer than
     /// 20 s on a cold start — so it is given the warm-up limit; once one has
     /// answered, the ordinary one. An abandoned request stops Vision until

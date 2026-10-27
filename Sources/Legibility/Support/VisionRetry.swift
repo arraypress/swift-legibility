@@ -21,9 +21,18 @@
 //  process sends Vision nothing more (``isStalled``): every later request
 //  fails at once, which callers report as not measured, never as an answer.
 //  A slow answer is not a stuck one: the first request in a process loads
-//  Vision's models and took longer than 20 s on a cold start, so it gets
-//  ``warmUpTimeout``; and an abandoned request that does come back lifts the
-//  stall. Only a request that never answers keeps Vision stopped.
+//  Vision's models, so it gets ``warmUpTimeout``; and an abandoned request
+//  that does come back lifts the stall. Only a request that never answers
+//  keeps Vision stopped.
+//
+//  0.3.4: one request at a time. Under design-kit's test suite, ~30 text
+//  requests at once froze together in Vision's runtime (an `e5rt` stream
+//  error) until cancelled, warm or cold — the "cold start" 0.3.3 blamed.
+//  Run one at a time, the same 108 tests passed in 121 s instead of 219 s
+//  with 7 failures, and 200 of 200 requests answered, the slowest in 18 s.
+//  A request waits its turn for up to its own limit (not a stall: nothing
+//  is abandoned), then runs under a fresh one; the turn passes on only when
+//  the request truly returns, so a stuck one holds it and stops the rest.
 //  `LEGIBILITY_VISION_CPU=1` keeps every request on the CPU from the start.
 //
 
@@ -58,6 +67,9 @@ public enum VisionRetry {
 
     private static let health = OSAllocatedUnfairLock(initialState: VisionHealth())
 
+    /// The turn: one Vision request at a time in this process.
+    static let turn = DispatchSemaphore(value: 1)
+
     /// For tests: a request abandoned, with none left running.
     static func markStalled() { health.withLock { $0.abandoned() } }
 
@@ -73,16 +85,19 @@ public enum VisionRetry {
         return perform(request, on: handler, within: health.withLock { $0.limit(timeout: timeout, warmUp: warmUpTimeout) })
     }
 
-    /// `request` on `handler` on a thread of its own, waited for at most
-    /// `seconds`; past that it is cancelled and abandoned, and Vision is
-    /// sent nothing more until it answers.
+    /// `request` on `handler` on a thread of its own once it has the turn
+    /// (waited for at most `seconds`), then waited for at most `seconds`;
+    /// past that it is cancelled and abandoned, and Vision is sent nothing
+    /// more until it answers.
     static func perform(_ request: VNRequest, on handler: VNImageRequestHandler, within seconds: Double) -> Bool {
+        guard turn.wait(timeout: .now() + seconds) == .success else { return false }
         let done = DispatchSemaphore(value: 0)
         let outcome = OSAllocatedUnfairLock<Bool?>(initialState: nil)
         // The request and handler are only touched by the worker until it
         // signals, or never again here once abandoned.
         nonisolated(unsafe) let request = request, handler = handler
         DispatchQueue.global(qos: .userInitiated).async {
+            defer { turn.signal() }
             let ok: Bool
             do { try handler.perform([request]); ok = true } catch { ok = false }
             outcome.withLock { $0 = ok }
